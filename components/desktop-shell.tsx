@@ -10,6 +10,7 @@ import { bgTimerCleanup } from "@/lib/bg-timer";
 import { PhoneThemeApp } from "@/components/phone-theme-app";
 import { PhoneCharacterApp } from "@/components/phone-character-app";
 import { PhoneSettingsApp } from "@/components/phone-settings-app";
+import { ContentImportHost } from "@/components/content-import-host";
 import { PhoneChatApp } from "@/components/chat/phone-chat-app";
 import { PhonePlaceholderApp } from "@/components/phone-placeholder-app";
 import MusicApp from "@/components/music/music-app";
@@ -5034,6 +5035,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       </section>
       {/* 微信云同步过程可视化：拉取/上传/运行包同步与失败都在这里冒 toast */}
       <WeixinSyncToast />
+      <ContentImportHost />
     </>
   );
 }
