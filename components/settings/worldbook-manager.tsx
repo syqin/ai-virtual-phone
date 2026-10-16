@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useContext, useCallback } from "react";
-import { Plus, BookOpen, Trash2, Upload, Download, ChevronLeft, AlertCircle, Maximize2, Replace } from "lucide-react";
+import { Plus, BookOpen, Trash2, Upload, Download, ChevronLeft, AlertCircle, Maximize2, Replace, Link2, ClipboardPaste } from "lucide-react";
+import { openContentImport } from "@/lib/content-import";
 import {
     loadWorldBooks,
     saveWorldBooks,
@@ -145,6 +146,23 @@ export function WorldBookManager({ isActive = true }: { isActive?: boolean } = {
     // Debounced save for mascot batch actions — avoids flooding IndexedDB
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingSaveRef = useRef<WorldBookConfig[] | null>(null);
+    useEffect(() => {
+        const onUpdated = (event: Event) => {
+            if (saveTimerRef.current) {
+                clearTimeout(saveTimerRef.current);
+                saveTimerRef.current = null;
+                pendingSaveRef.current = null;
+            }
+            const loaded = loadWorldBooks();
+            setBooks(loaded);
+            const importedId = (event as CustomEvent<{ id?: string }>).detail?.id;
+            if (importedId && loaded.some((book) => book.id === importedId)) {
+                setActiveBookId(importedId);
+            }
+        };
+        window.addEventListener("settings-worldbooks-updated", onUpdated);
+        return () => window.removeEventListener("settings-worldbooks-updated", onUpdated);
+    }, []);
     const debouncedSave = (next: WorldBookConfig[]) => {
         pendingSaveRef.current = next;
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -478,6 +496,24 @@ export function WorldBookManager({ isActive = true }: { isActive?: boolean } = {
                 <>
                     <div className="flex items-center">
                         <h2 className="m-0 mx-2 ts-28 font-bold italic leading-none text-black">Worldbooks</h2>
+                    </div>
+                    <div className="mx-2 flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            onClick={() => openContentImport({ mode: "url" })}
+                            className="inline-flex h-9 items-center justify-center gap-1.5 whitespace-nowrap rounded-[20px] border border-black/10 bg-white px-3 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 active:scale-95"
+                        >
+                            <Link2 size={14} strokeWidth={1.8} />
+                            <span>从链接导入</span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => openContentImport({ mode: "paste" })}
+                            className="inline-flex h-9 items-center justify-center gap-1.5 whitespace-nowrap rounded-[20px] border border-black/10 bg-white px-3 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 active:scale-95"
+                        >
+                            <ClipboardPaste size={14} strokeWidth={1.8} />
+                            <span>粘贴 JSON</span>
+                        </button>
                     </div>
 
                     {books.length === 0 ? (

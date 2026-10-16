@@ -54,6 +54,13 @@ import { notifyMascotPageContext } from "@/lib/mascot-events";
 import { kvGet, kvSet } from "@/lib/kv-db";
 import { normalizeTimeZone } from "@/lib/character-time";
 import { removeCharacterChatReferences } from "@/lib/character-chat-cleanup";
+import {
+  CHARACTERS_UPDATED_EVENT,
+  CONTENT_IMPORT_CHARACTER_READY_EVENT,
+  openContentImport,
+  persistImportedCharacter,
+  type PreparedCharacterImport,
+} from "@/lib/content-import";
 
 type ViewType = "list" | "detail";
 
@@ -200,6 +207,7 @@ export function PhoneCharacterApp({ onClose, onNotice }: PhoneCharacterAppProps)
   const [transition, setTransition] = useState<TransitionState | null>(null);
   const [pendingPlacementChar, setPendingPlacementChar] = useState<Character | null>(null);
   const [pendingPolaroidStyle, setPendingPolaroidStyle] = useState<number>(0);
+  const [queuedCanvasImport, setQueuedCanvasImport] = useState<PreparedCharacterImport | null>(null);
 
   // ── 世界卷宗：分组数据 + 当前打开的卷宗（持久记忆） ──
   const [worldGroups, setWorldGroups] = useState<CharacterWorldGroup[]>(() => loadCharacterWorldGroups());
@@ -211,6 +219,25 @@ export function PhoneCharacterApp({ onClose, onNotice }: PhoneCharacterAppProps)
     const reload = () => setWorldGroups(loadCharacterWorldGroups());
     window.addEventListener(CHARACTER_WORLDS_UPDATED_EVENT, reload);
     return () => window.removeEventListener(CHARACTER_WORLDS_UPDATED_EVENT, reload);
+  }, []);
+  useEffect(() => {
+    const onCharactersUpdated = () => {
+      setCharacters(loadCharacters());
+      setWorldGroups(loadCharacterWorldGroups());
+    };
+    const onCharacterReady = (event: Event) => {
+      const detail = (event as CustomEvent<PreparedCharacterImport>).detail;
+      if (!detail?.placeOnCanvas) return;
+      event.preventDefault();
+      setQueuedCanvasImport(detail);
+      setView({ type: "list", id: null, isEditing: false });
+    };
+    window.addEventListener(CHARACTERS_UPDATED_EVENT, onCharactersUpdated);
+    window.addEventListener(CONTENT_IMPORT_CHARACTER_READY_EVENT, onCharacterReady);
+    return () => {
+      window.removeEventListener(CHARACTERS_UPDATED_EVENT, onCharactersUpdated);
+      window.removeEventListener(CONTENT_IMPORT_CHARACTER_READY_EVENT, onCharacterReady);
+    };
   }, []);
   // 记忆的世界可能已被删除 → 回落默认卷宗
   const safeWorldId = worldGroups.some(g => g.id === currentWorldId) ? currentWorldId : DEFAULT_CHARACTER_WORLD_ID;
@@ -277,6 +304,8 @@ export function PhoneCharacterApp({ onClose, onNotice }: PhoneCharacterAppProps)
             onSelect={handleSelectChar}
             onCreate={(style: number) => { setPendingPolaroidStyle(style); setView({ type: "detail", id: null, isEditing: true }); }}
             pendingPlacementChar={pendingPlacementChar}
+            queuedCanvasImport={queuedCanvasImport}
+            onQueuedCanvasImportDone={() => setQueuedCanvasImport(null)}
             onStartCharPlacement={(char: Character) => setPendingPlacementChar(char)}
             onPlacementDone={(placed: Character) => {
               setPendingPlacementChar(null);
@@ -482,6 +511,8 @@ function CharListView({
   onSelect,
   onCreate,
   pendingPlacementChar,
+  queuedCanvasImport,
+  onQueuedCanvasImportDone,
   onStartCharPlacement,
   onPlacementDone,
   onClearPendingPlacement,
@@ -498,6 +529,8 @@ function CharListView({
   onSelect: (char: Character, e: React.MouseEvent<HTMLDivElement>) => void;
   onCreate: (polaroidStyle: number) => void;
   pendingPlacementChar: Character | null;
+  queuedCanvasImport: PreparedCharacterImport | null;
+  onQueuedCanvasImportDone: () => void;
   onStartCharPlacement: (char: Character) => void;
   onPlacementDone: (char: Character) => void;
   onClearPendingPlacement: () => void;
@@ -723,7 +756,15 @@ function CharListView({
   panRef.current = pan;
   const [showStylePicker, setShowStylePicker] = useState(false);
   const pendingStyleRef = useRef<number>(0);
-  const pendingActionRef = useRef<'import' | 'create'>('import');
+  const pendingActionRef = useRef<'import' | 'create' | 'import-payload'>('import');
+  const pendingImportRef = useRef<PreparedCharacterImport | null>(null);
+
+  useEffect(() => {
+    if (!queuedCanvasImport) return;
+    pendingImportRef.current = queuedCanvasImport;
+    pendingActionRef.current = "import-payload";
+    setShowStylePicker(true);
+  }, [queuedCanvasImport]);
   const [pendingBgType, setPendingBgType] = useState<CanvasBgItem['type'] | null>(null);
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number }>({ x: -9999, y: -9999 });
   const [importError, setImportError] = useState<string | null>(null);
@@ -1100,7 +1141,18 @@ function CharListView({
         footer={
           <div className="char-bottom-bar flex justify-center pb-8">
             <div className="wt-bottom-pill">
-              <button className="wt-bottom-pill-btn" onClick={() => { pendingActionRef.current = 'import'; setShowStylePicker(true); }}>
+              <button className="wt-bottom-pill-btn" onClick={() => {
+                openContentImport({
+                  mode: "menu",
+                  offerFile: true,
+                  placeCharacter: true,
+                  onPickFile: () => {
+                    pendingActionRef.current = "import";
+                    pendingImportRef.current = null;
+                    setShowStylePicker(true);
+                  },
+                });
+              }}>
                 <IconImport />
                 <span>IMPORT</span>
               </button>
@@ -1492,7 +1544,20 @@ function CharListView({
         <div
           className="absolute inset-0 bg-black/50 flex flex-col items-center justify-end pb-[120px] px-4"
           style={{ zIndex: 9999999 }}
-          onClick={() => setShowStylePicker(false)}
+          onClick={() => {
+            setShowStylePicker(false);
+            if (pendingActionRef.current === "import-payload" && pendingImportRef.current) {
+              const payload = pendingImportRef.current;
+              pendingImportRef.current = null;
+              pendingActionRef.current = "import";
+              onQueuedCanvasImportDone();
+              void persistImportedCharacter(payload).then((character) => {
+                onNotice(`已导入角色「${character.name.trim() || "未命名角色"}」`);
+              }).catch(() => {
+                onNotice("导入失败，请检查文件格式");
+              });
+            }
+          }}
         >
           <div className="relative w-full max-w-[280px]" onClick={e => e.stopPropagation()}>
             {/* Back paper layer */}
@@ -1530,6 +1595,20 @@ function CharListView({
                     onClick={() => {
                       pendingStyleRef.current = idx;
                       setShowStylePicker(false);
+                      if (pendingActionRef.current === "import-payload" && pendingImportRef.current) {
+                        const payload = pendingImportRef.current;
+                        pendingImportRef.current = null;
+                        pendingActionRef.current = "import";
+                        const avatar = payload.avatarOverride && payload.avatarOverride.trim()
+                          ? payload.avatarOverride
+                          : (payload.data.avatar ?? null);
+                        const character = createCharacter({ ...payload.data, avatar });
+                        character.polaroidStyle = idx;
+                        onStartCharPlacement(character);
+                        onQueuedCanvasImportDone();
+                        onNotice("点击画布放置角色");
+                        return;
+                      }
                       if (pendingActionRef.current === 'import') {
                         fileRef.current?.click();
                       } else {
